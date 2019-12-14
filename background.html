@@ -102,7 +102,7 @@
 			
 				//show the window when clicked
 				chrome.browserAction.onClicked.addListener(function(tab) {
-				
+					
 					//opens the window for the first time
 					chrome.tabs.sendRequest(tab.id, {
 						command:"load",

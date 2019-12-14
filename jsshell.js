@@ -22,7 +22,8 @@ function ____execute__jsshell___script(script) {
     
         //constants for the shell
         PORT_NAME:"jsshell",
-        RESOURCE_URL:"http://www.hugoware.net/chrome_plugin/",
+        RESOURCE_URL:chrome.extension.getURL("/"),
+		HOME_URL:"http://hugoware.net",
         EDITOR_OFFSET:15,
         EDITOR_START_OFFSET:40,
         EDITOR_OPACITY:0.3,
@@ -31,22 +32,37 @@ function ____execute__jsshell___script(script) {
         KEY_TAB:9,
         KEY_DELETE:46,
         KEY_DOWN_ARROW:40,
+		KEY_UP_ARROW:38,
+		KEY_RIGHT_ARROW:39,
+		KEY_LEFT_ARROW:37,
+		KEY_ESC:27,
+		KEY_SHIFT:16,
         KEY_F1:112,
+		KEY_EDITOR_SHORTCUT:-1,
         KEY_QUESTION:191,
         TAB_INSERT:"    ",
         DEFAULT_NOTE_DURATION:4000,
         NOTE_INTERVAL:250,
         NOTE_OFFSET:25,
         ERROR_COLOR:"#090",
+		RECENT_COMMAND_CONTAINER:"jsshell_recent_command_container",
+		AUTO_COMPLETE_ITEM_CSS:"jsshell-auto-complete-item",
+		AUTO_COMPLETE_SELECTED_ITEM_CSS:"jsshell-auto-complete-selected-item",
+		AUTO_COMPLETE_VALUE:"jsshell-auto-complete-value-text",
         
         //colors for elements on the page
         AUTOCOMPLETE_COLORS:{
-            "css":"#9cd75d",
+            "class":"#9cd75d",
             "id":"#d77628",
             "element":"#528def",
+			"doc":"#528def",
+			"body":"#528def",
+			"window":"#528def",
             "jQuery":"#b36ecd",
-            "jLinq":"#6ecdbe",
-            "jsshell":"#8f8f8f"
+            "jlinq":"#6ecdbe",
+            "jsshell":"#8f8f8f",
+			"js":"#8f8f8f",
+			"css":"#8f8f8f"
         },
         
         //utility functions used by other classes
@@ -105,6 +121,16 @@ function ____execute__jsshell___script(script) {
                         end:element.selectionEnd
                     };
                 };
+				
+				//set the value for the text editor
+				area.setText = function(text) {
+					area.val(text);
+				};
+				
+				//set the value for the text editor
+				area.getText = function(text) {
+					return area.val();
+				};
                 
                 //sets the selection of an element
                 area.setSelectionRange = function(start, end) {
@@ -143,15 +169,64 @@ function ____execute__jsshell___script(script) {
                     keydown:function(e) { },
                     keyup:function(e) { }
                 };
+				
+                //handle pressing a key on the up event
+				area.previous = 0;
+                //area.keyup(function(e) { });
                 
                 //handle pressing a key on the down event
                 area.keydown(function(e) {
-                    if (area.events.keydown(e) != null) { return; }
                     switch(e.keyCode) {
-                        case shell.KEY_TAB : e.preventDefault(); area.insertText(shell.TAB_INSERT); break;
-                        case shell.KEY_DELETE : if (e.ctrlKey) { area.text(""); }; break;
-                        default : return;
+						
+						//runs the current command
+						case shell.KEY_ENTER : 
+							return shell.ui.editor.actions.handleEnter(e); 
+							
+						//help for the current word
+						case shell.KEY_ESC : 
+							shell.ui.autocomplete.hide();
+							return true;
+						
+						//help for the current word
+						case shell.KEY_F1 : 
+							return shell.ui.editor.actions.handleHelp(e); 
+						case shell.KEY_QUESTION : 
+							return shell.ui.editor.actions.handleHelp(e); 
+							
+						case shell.KEY_LEFT_ARROW : 
+							shell.ui.autocomplete.hide();
+							return true;
+						case shell.KEY_RIGHT_ARROW : 
+							shell.ui.autocomplete.hide();
+							return true;
+							
+						//move the auto complete down
+						case shell.KEY_DOWN_ARROW : 
+							if (shell.ui.autocomplete.tryMoveDownList()) return false;
+							return true;
+						
+						//move the auto complete up
+						case shell.KEY_UP_ARROW : 
+							if (shell.ui.autocomplete.tryMoveUpList()) return false;
+							return true;
+					
+						//auto complete or tab forward
+                        case shell.KEY_TAB : 
+							if (!shell.ui.autocomplete.tryComplete()) 
+								area.insertText(shell.TAB_INSERT); 
+							e.preventDefault();
+							return false;
+							
+						//wipe out the content
+                        case shell.KEY_DELETE : 
+							if (e.ctrlKey) area.text("");
+							break;
+							
                     }
+
+					//do these keys normally
+					shell.ui.autocomplete.display();
+					return true;
                 });
                 
                 //gets the word the cursor is presently over
@@ -181,11 +256,6 @@ function ____execute__jsshell___script(script) {
                     }
                     
                 };
-                
-                //handle pressing a key on the up event
-                area.keyup(function(e) {
-                    if (area.events.keyup(e) != null) { return; }                    
-                });
                 
             }
         
@@ -346,7 +416,7 @@ function ____execute__jsshell___script(script) {
                                 "margin":"0",
                                 "padding":"5px 10px",
                                 "height":"35px",
-                                "cursor":"pointer",
+                                "cursor":"move",
                                 "text-align":"left",
                                 "font-family":"sans-serif",
                                 "color":"#fff",
@@ -363,6 +433,7 @@ function ____execute__jsshell___script(script) {
                                     "height":"25px",
                                     "width":"25px",
                                     "position":"relative",
+									"cursor":"pointer",
                                     "top":"4px",
                                     "float":"right"
                                 });
@@ -563,7 +634,7 @@ function ____execute__jsshell___script(script) {
                             self.fields.identity.val(identity);
                         
                             //try and find a command setting
-                            var params = jLinq.from(shell.settings.commands)
+                            var params = jlinq.from(shell.settings.commands)
                                 .equals("identity", identity)
                                 .first();
                                 
@@ -645,7 +716,146 @@ function ____execute__jsshell___script(script) {
             
             },
         
-            //the actual text editor for the page
+			//helper for the auto complete box
+			autocomplete:{
+				visible:false,
+				
+				//queues the autocomplete to display
+				display:function() {
+					shell.ui.autocomplete.cancel();
+					shell.ui.autocomplete.pending = window.setTimeout(function() {
+						shell.ui.editor.updateSuggest();
+						shell.ui.autocomplete.show();
+					}, 100);
+				},
+				
+				//cancels showing the autocomplete
+				cancel:function() {
+					window.clearTimeout(shell.ui.autocomplete.pending);
+				},
+				
+				//displays the auto complete
+				show:function() {
+				
+					//make sure something was found
+					if (!shell.ui.autocomplete.list || 
+						!shell.ui.autocomplete.list.length || 
+						shell.ui.autocomplete.list.length == 0) {
+						shell.ui.autocomplete.hide();
+						return;
+					}
+				
+					//display the results
+					shell.ui.autocomplete.visible = true;
+					shell.ui.editor.suggest.show();
+					shell.ui.autocomplete.refreshListStyles();
+				},
+				
+				//hides the auto complete
+				hide:function() {
+					shell.ui.autocomplete.visible = false;
+					shell.ui.editor.suggest.hide();
+				},
+				
+				_getNext:function() {
+					var next = shell.ui.editor.suggest.find("li."+shell.AUTO_COMPLETE_SELECTED_ITEM_CSS).next();
+					if (next.length == 0) next = shell.ui.editor.suggest.find("."+shell.AUTO_COMPLETE_ITEM_CSS+":first");
+					return next;
+				},
+				
+				_getPrev:function() {
+					var prev = shell.ui.editor.suggest.find("li."+shell.AUTO_COMPLETE_SELECTED_ITEM_CSS).prev();
+					if (prev.length == 0) prev = shell.ui.editor.suggest.find("."+shell.AUTO_COMPLETE_ITEM_CSS+":last");
+					return prev;
+				},
+				
+				_set:function(item) {
+					shell.ui.editor.suggest.find("li").removeClass(shell.AUTO_COMPLETE_SELECTED_ITEM_CSS);
+					item.addClass(shell.AUTO_COMPLETE_SELECTED_ITEM_CSS);
+					shell.ui.autocomplete.refreshListStyles();
+				},
+				
+				//refreshes the styles for the view
+				refreshListStyles:function() {
+					shell.ui.editor.suggest.find("li").css({"background":"none"});
+					shell.ui.editor.suggest.find("li."+shell.AUTO_COMPLETE_SELECTED_ITEM_CSS)
+						.css({"background":"#eef"});
+				},
+				
+				//tries to move the list item down once
+				tryMoveDownList:function() {
+					if (!shell.ui.autocomplete.visible) return false;
+					
+					//find the one to highlight
+					var next = shell.ui.autocomplete._getNext();
+					shell.ui.autocomplete._set(next);
+					return true;
+				},
+				
+				//tries to move the list item up once
+				tryMoveUpList:function() {
+					if (!shell.ui.autocomplete.visible) return false;
+					
+					//find the one to highlight
+					var prev = shell.ui.autocomplete._getPrev();
+					shell.ui.autocomplete._set(prev);
+					return true;
+				},
+				
+				//tries to complete the highlighted word
+				tryComplete:function() {
+					
+					//try and find the current item
+					if (!shell.ui.autocomplete.visible) return false;
+					var selection = shell.ui.editor.suggest.find("."+shell.AUTO_COMPLETE_SELECTED_ITEM_CSS);
+					
+					//if nothing was found then never mind
+					if (selection.length == 0) return;
+
+					//if there is one, try and fill in the remaining word
+					var actual = selection.find("."+shell.AUTO_COMPLETE_VALUE).text();
+					
+					//get the value to check with - this drops special
+					//characters for css classes and ids
+					var value = actual.replace(/^(\.|\#)/gi, "");
+					
+					//get where they are now
+					var range = shell.ui.editor.text.getSelectionRange();
+					var text = shell.ui.editor.text.getText().substr(0, range.start);
+					
+					//compare to find how much is already there
+					var begin = Math.max(range.start - value.length, 0);
+					text = text.substr(begin);
+					
+					//the position of the replaced word to limit
+					var position = 0;
+					
+					//check for a sequence of matches
+					for(var i = 0; i < text.length; i++) {
+						
+						//if they match, move the match value forward
+						if (text.charAt(i).toLowerCase() == value.charAt(position).toLowerCase()) {
+							position++;
+						}
+						//otherwise, reset the matching
+						else {
+							position = 0;
+						}
+					}
+					
+					//set the value
+					shell.ui.editor.text.insertText(value, { start:range.start - position, end:range.end });
+					
+					//hide the list
+					shell.ui.autocomplete.hide();
+					
+					//return it worked
+					return true;
+				}
+				
+			},
+			
+			//the actual text editor for the page
             editor:{
             
                 //ui elements for the page
@@ -656,23 +866,33 @@ function ____execute__jsshell___script(script) {
                 container:null, //container for the text editor
                 text:null, //the actual text edit box
                 settings:null, //the settings button
-                close:null,
-                
+                close:null, //hides the dialog
+				run:null, //runs the current command
+			    
                 //updates the values on the auto suggest box
                 updateSuggest:function() {
                 
                     //make sure they want this
                     if (!shell.settings.showHint) { return; }
                     
+					//reset the current 
+					shell.ui.autocomplete.list = [];
+					
                     //get the position
                     var position = shell.ui.editor.text.getSelectionRange();
                     var text = shell.ui.editor.text.val().substr(0, position.start);
                     text = text.match(/\.?\#?[a-z0-9\-_]*$/i)[0];
                     
+					//check if there was a match
+					if (text.length == 0) {
+                        shell.ui.autocomplete.hide();
+                        return;
+					}
+					
                     //perform a lookup
                     var results = shell.extension.findAutocomplete(text);
                     if (results.length == 0) {
-                        shell.ui.editor.suggest.hide();
+                        shell.ui.autocomplete.hide();
                         return;
                     }
                         
@@ -687,16 +907,16 @@ function ____execute__jsshell___script(script) {
                     .appendTo(shell.ui.editor.suggest);
                     
                     //get the items to show
-                    var show = jLinq.from(results).take(10);
+                    shell.ui.autocomplete.list = jlinq.from(results).take(10);
                     
                     //add each item to the list
-                    $.each(show, function(i, v) {
+                    $.each(shell.ui.autocomplete.list, function(i, v) {
                         var item = shell.ui.editor.createSuggestItem(v);
                         list.append(item);
                     });
                     
                     //if there are more, say so
-                    if (show.length < results.length) {
+                    if (shell.ui.autocomplete.list.length < results.length) {
                         $("<li/>").css({
                             "font-family":"monospace",
                             "font-size":"11px",
@@ -706,12 +926,14 @@ function ____execute__jsshell___script(script) {
                             "padding":"3px 0",
                             "color":"#777"
                         })
-                        .text([(results.length - show.length), " more..."].join(""))
+                        .text([(results.length - shell.ui.autocomplete.list.length), " more..."].join(""))
                         .appendTo(list);
                     }
+					
+					//set the first item selected by default
+					list.find("."+shell.AUTO_COMPLETE_ITEM_CSS+":first")
+						.addClass(shell.AUTO_COMPLETE_SELECTED_ITEM_CSS);
                     
-                    //display the list
-                    shell.ui.editor.suggest.show();
                 
                 },
                 
@@ -727,8 +949,9 @@ function ____execute__jsshell___script(script) {
                         "padding":"0",
                         "text-align":"left"
                         })
+						.addClass(shell.AUTO_COMPLETE_VALUE)
                         .text(
-                            (item.type == "css" ? "." : item.type == "id" ? "#" : "") +
+                            (item.type == "class" ? "." : item.type == "id" ? "#" : "") +
                             item.val
                             );
                         
@@ -749,6 +972,7 @@ function ____execute__jsshell___script(script) {
                         "padding":"3px 0",
                         "border-bottom":"1px solid #ddd"
                         })
+						.addClass(shell.AUTO_COMPLETE_ITEM_CSS)
                         .append(style)
                         .append(text);
                     
@@ -861,8 +1085,8 @@ function ____execute__jsshell___script(script) {
                         "-webkit-border-radius": "10px",
                         "border": "1px solid #999",
                         "background": "#fff",
-                        "margin":"15px 0 0 -200px",
-                        "width":"180px"
+                        "margin":"15px 0 0 -240px",
+                        "width":"220px"
                         })
                         .hide();
                     
@@ -870,10 +1094,11 @@ function ____execute__jsshell___script(script) {
                         "margin":"0",
                         "padding":"0 5px",
                         "height":"35px",
-                        "cursor":"pointer"
+                        "cursor":"move"
                         })
                         .dblclick(function() {
                             if (shell.ui.editor.isMinimized()) {
+								shell.ui.editor.minimized = false;
                                 shell.ui.editor.moveTo(shell.ui.editor.restore);
                                 setTimeout(function() {
                                     shell.ui.editor.text.focus();
@@ -881,6 +1106,7 @@ function ____execute__jsshell___script(script) {
                             }
                             else {
                                 shell.ui.editor.moveTo(shell.ui.editor.getMinimizePosition());
+								shell.ui.editor.minimized = true;
                             }
                         });
                         
@@ -903,7 +1129,8 @@ function ____execute__jsshell___script(script) {
                         "border": "2px solid",
                         "font-family":"monospace",
                         "font-size":"12px",
-                        "font-weight":"normal"
+                        "font-weight":"normal",
+						"outline":"none"
                         });
                         
                     shell.ui.editor.container = $("<div/>").css({
@@ -924,7 +1151,24 @@ function ____execute__jsshell___script(script) {
                         "float":"right",
                         "cursor":"pointer"
                         })
+						.attr("title", "Closes the jsshell window - but doesn't remove the script")
                         .click(shell.ui.editor.remove);
+						
+                    //create a run button
+                    shell.ui.editor.run = $("<a/>").css({
+                        "display":"block",
+                        "position":"relative",
+                        "top":"4px",
+                        "padding":"0",
+                        "margin":"0",
+                        "background": ["url(", shell.RESOURCE_URL, "icon-run.png?2", ") right no-repeat"].join(""),
+                        "height":"25px",
+                        "width":"50px",
+                        "float":"left",
+                        "cursor":"pointer"
+                        })
+						.attr("title", "CTRL+Enter : Runs the current command (or highlighted command)")
+                        .click(shell.ui.editor.runCommand);
                         
                     //show the help button
                     shell.ui.editor.settings = $("<a/>").css({
@@ -939,6 +1183,7 @@ function ____execute__jsshell___script(script) {
                         "float":"right",
                         "cursor":"pointer"
                         })
+						.attr("title", "Browses to the jsshell section on hugoware.net")
                         .attr("href", "http://www.hugoware.net/projects/jsshell")
                         .attr("target", "_blank");
                     
@@ -946,6 +1191,7 @@ function ____execute__jsshell___script(script) {
                     shell.ui.editor.dialog.append(shell.ui.editor.suggest);
                     shell.ui.editor.dialog.append(shell.ui.editor.header);
                     shell.ui.editor.header.append(shell.ui.editor.logo);
+                    shell.ui.editor.header.append(shell.ui.editor.run);
                     shell.ui.editor.header.append(shell.ui.editor.close);
                     shell.ui.editor.header.append(shell.ui.editor.settings);
                     
@@ -968,9 +1214,10 @@ function ____execute__jsshell___script(script) {
                     shell.ui.editor.dialog
                         .add(shell.ui.editor.suggest)
                         .draggable({
-                            cursor:"pointer",
+                            cursor:"move",
                             handle:shell.ui.editor.header,
                             opacity:0.5,
+							start:function() { shell.ui.editor.minimized = false; },
                             stop:function() {
                                 shell.ui.editor.setRestorePosition();
                                 shell.ui.editor.text.focus();
@@ -997,27 +1244,30 @@ function ____execute__jsshell___script(script) {
                 
                 //determines if the window is already minimized or not
                 isMinimized:function() {
-                    var current = shell.ui.editor.dialog.offset();
-                    var min = shell.ui.editor.getMinimizePosition();
-                    return current.top == min.top && current.left == min.left;
+                    return shell.ui.editor.minimized;
                 },
                 
                 //displays the dialog
                 show:function() {
-                    shell.ui.window.area.prepend(shell.ui.editor.dialog);
+					var dialog = shell.ui.editor.dialog;
+                    shell.ui.window.area.prepend(dialog);
+					dialog.show();
+					
+					//set the default value for the text
+					var recent = shell.data.load(shell.RECENT_COMMAND_CONTAINER, true);
+					if (recent) shell.ui.editor.text.setText(recent);
                 },
                 
                 //hides the window from view
                 hide:function() {
-                    $().append(shell.ui.editor.dialog);
+                    $("<div/>").append(shell.ui.editor.dialog);
                 },
 
                 //kills a jsshell window
                 remove:function() {
                     var dialog = shell.ui.editor.dialog;
                     dialog.stop().fadeOut(400, function() { 
-                        dialog.remove();
-                        shell.ui.editor.init();
+                        dialog.hide();
                     });
                 },
                 
@@ -1057,7 +1307,7 @@ function ____execute__jsshell___script(script) {
                     if (word.length == 0) { return; }
                     
                     //check if this exists in jQuery first
-                    if (jLinq.from(shell.extension.autocomplete)
+                    if (jlinq.from(shell.extension.autocomplete)
                         .equals("val", word)
                         .count() > 0) {
                         found = word;
@@ -1066,8 +1316,8 @@ function ____execute__jsshell___script(script) {
                     else if (word.length > 2) {
                         
                         //select something that matches
-                        found = jLinq.from(shell.extension.autocomplete)
-                            .startsWith("val", word)
+                        found = jlinq.from(shell.extension.autocomplete)
+                            .starts("val", word)
                             .first();
                             
                         //if found, select the word
@@ -1104,18 +1354,23 @@ function ____execute__jsshell___script(script) {
                     var command = shell.ui.editor.text.getSelectedText();
                     
                     //hide the window so it won't be affected
-                    shell.ui.window.hide();
-                    
+					shell.ui.window.hide();
+					
                     //run the command
                     var result = shell.extension.runCommand(command);
+					shell.ui.window.show();
                     
                     //display feedback of the call
                     if (!result.success) {
+						js.error = result.exception;
                         shell.ui.alert.post({
                             message:result.error, 
-                            title:"Script error"
+                            title:"Script Error"
                             });
                     }
+					
+					//save this as the most recent command
+					shell.data.save(shell.RECENT_COMMAND_CONTAINER, command, true);
                     
                     //restore the window
                     shell.ui.window.show();
@@ -1131,21 +1386,10 @@ function ____execute__jsshell___script(script) {
                 events:{
                 
                     //when a key is pressed down
-                    handleKeyDown:function(e) {
-                        switch(e.keyCode) {
-                            case shell.KEY_DOWN_ARROW : shell.ui.editor.actions.handleDown(e); break;
-                            case shell.KEY_ENTER : shell.ui.editor.actions.handleEnter(e); break;
-                            case shell.KEY_F1 : shell.ui.editor.actions.handleHelp(e); break;
-                            case shell.KEY_QUESTION : shell.ui.editor.actions.handleHelp(e); break;
-                            default : return;
-                        }
-                    },
+                    handleKeyDown:function(e) { },
                     
                     //when a key is released
-                    handleKeyUp:function(e) {
-                        if (shell.ui.editor.suggestDelay) { window.clearTimeout(shell.ui.editor.suggestDelay); }
-                        shell.ui.editor.suggestDelay = window.setTimeout(shell.ui.editor.updateSuggest, 100);
-                    }
+                    handleKeyUp:function(e) { }
                     
                 },
                 
@@ -1154,16 +1398,16 @@ function ____execute__jsshell___script(script) {
                 
                     //when the user presses the down key
                     handleDown:function(e) {
+						shell.ui.autocomplete.tryMoveUpDown()
                         if (e.ctrlKey) { 
                             shell.ui.editor.minimize();
                         }
+						
                     },
                     
                     //when the user presses enter
                     handleEnter:function(e) {
-                        if (e.ctrlKey) { 
-                            shell.ui.editor.runCommand();
-                        }
+                        if (e.ctrlKey) shell.ui.editor.runCommand();
                     },
                     
                     //when the user presses enter
@@ -1388,14 +1632,7 @@ function ____execute__jsshell___script(script) {
             window:{
             
                 //creates the actual window for the jsshell
-                area:$("<div/>").css({
-                    position:"fixed",
-                    top:0,
-                    left:0,
-                    height:0,
-                    width:0,
-                    "z-index":9999999
-                    }),
+                area:null,
                 
                 //displays the editor
                 show:function() {
@@ -1404,7 +1641,7 @@ function ____execute__jsshell___script(script) {
                 
                 //removes the window from view
                 hide:function() {
-                    $().append(shell.ui.window.area);
+                    $("<div/>").append(shell.ui.window.area);
                 },
                 
                 //handles displaying the editor                
@@ -1416,12 +1653,28 @@ function ____execute__jsshell___script(script) {
                 //clears existing window
                 clear:function() {
                     shell.ui.window.area.remove();
-                }
+                },
+				
+				//prepares the main window
+				init:function() {
+				
+					//create the view area
+					shell.ui.window.area = $("<div/>").css({
+						position:"fixed", 
+						top:0,
+						left:0,
+						height:0,
+						width:0,
+						"z-index":9999999
+						});
+				
+				}
                 
             },
             
             //setup any UI 
             init:function() {
+				shell.ui.window.init();
                 shell.ui.editor.init();
                 shell.ui.window.show();
                 shell.ui.alert.init();
@@ -1434,6 +1687,31 @@ function ____execute__jsshell___script(script) {
             }
             
         },
+		
+		//handles global keyboard shortcuts
+		shortcut:{
+		
+			init:function() {
+				var keys = {
+					shift:false,
+					ctrl:false
+				};
+				$(window).keydown(function(e) {
+					if (e.ctrlKey) keys.ctrl = true;
+					if (e.keyCode == shell.KEY_SHIFT) keys.shift = true;
+					
+					if (keys.ctrl && keys.shift &&
+						e.keyCode == shell.KEY_EDITOR_SHORTCUT) { 
+						shell.ui.editor.display();
+					}
+				})
+				.keyup(function(e) {
+					if (e.ctrlKey) keys.ctrl = false;
+					if (e.keyCode == shell.KEY_SHIFT) keys.shift = false;
+				});
+			}
+		
+		},
         
         //persising custom settings
         data:{
@@ -1581,8 +1859,9 @@ function ____execute__jsshell___script(script) {
         
             //clears styles from the page
             nostyle:function() {
-                $("link").add("style").remove();
-                $("*").attr("style", "");
+                $("link").remove();
+				$("style").remove();
+                $("*[style]").attr("style", "");
                 
                 var retain = (function(items) {
                     var list = []
@@ -1646,7 +1925,7 @@ function ____execute__jsshell___script(script) {
                 if (!shell.settings.allowAuto) { return; }
             
                 //check for commands that meet the requirements
-                jLinq.from(shell.settings.commands)
+                jlinq.from(shell.settings.commands)
                     .is("auto")
                     .each(function(rec) {
                         if (!window.location.toString().match(new RegExp(rec.url, "gi"))) { return; }
@@ -1673,20 +1952,20 @@ function ____execute__jsshell___script(script) {
         
             //performs and eval and executes a command
             runCommand:function(command) {
-                
-                //check for a custom command
-                var result = shell.extension.tryExecuteCustomCommand(command);
-            
-                //check for any built in commands first
-                if (!result) {
-                    result = shell.extension.tryExecuteBuiltInCommand(command);
-                }
-                
-                //performs actual evaluation of commands
-                if (!result) {
-                    result = shell.extension.evalCommand(command);
-                }
-                
+
+				//check for a custom command
+				var result = shell.extension.tryExecuteCustomCommand(command);
+			
+				//check for any built in commands first
+				if (!result) {
+					result = shell.extension.tryExecuteBuiltInCommand(command);
+				}
+				
+				//performs actual evaluation of commands
+				if (!result) {
+					result = shell.extension.evalCommand(command);
+				}
+				
                 //and return the result
                 return result;
             
@@ -1698,19 +1977,21 @@ function ____execute__jsshell___script(script) {
                 //perform the eval
                 try {
                     ____execute__jsshell___script(command);
-                    return {
-                        success:true
-                    };
+					
+					//since this worked and the document may have changed
+					//then update the autocomplete values
+					shell.extension.updateAutocomplete();
+					
+					//return the successful attempt
+                    return { success:true };
                 }
                 catch(e) {
                     return {
                         success:false,
+						exception:e,
                         error:e.toString()
                     };
                 }
-                
-                //update the autocomplete list
-                shell.extension.updateAutocomplete();
                 
             },
             
@@ -1719,7 +2000,7 @@ function ____execute__jsshell___script(script) {
             
                 //search for a matching command
                 command = command.replace(/\!/gi, "");
-                var custom = jLinq.from(shell.settings.commands)
+                var custom = jlinq.from(shell.settings.commands)
                     .equals("identity", command)
                     .select(function(rec) {
                         return rec.script;
@@ -1744,13 +2025,12 @@ function ____execute__jsshell___script(script) {
                 //since it exists, run it now
                 try {
                     shell.builtin[command]();
-                    return {
-                        success:true
-                    };
+                    return { success:true };
                 }
                 catch(e) {
                     return {
                         success:false,
+						exception:e,
                         error:e.toString()
                     };
                 }
@@ -1781,39 +2061,50 @@ function ____execute__jsshell___script(script) {
             //updates the information about the content on the page
             updateAutocomplete:function() {
                 try {
-                
+				
                     //get the ids and elements
-                    var ids = jLinq.$("*[id]").distinct("attr('id')");
-                    var elements = jLinq.$("*").distinct("get(0).tagName");
-                    
+                    var ids = jlinq.$("*[id]").distinct(["attr", "id"]);
+                    var elements = jlinq.$("*")
+						.attach("tag", function(rec){ return rec.get(0).tagName.toLowerCase(); })
+						.distinct("tag");
+					
                     //get the classes
                     var classes = [];
-                    jLinq.$("*[class]").each(function(rec) {
+                    jlinq.$("*[class]").each(function(rec) {
                         $.each(rec.attr("class").split(/\s/g), function(i, v) { 
                             if ($.trim(v).length == 0) { return; }
                             classes.push(v); 
                         });
                     })    
-                    classes = jLinq.from(classes).distinct();
+                    classes = jlinq.from(classes).distinct();
                     
                     //merge the lists together
                     var list = [];
                     $.each(ids, function(i, v) { list.push({ type:"id", val:v }); });
-                    $.each(classes, function(i, v) { list.push({ type:"css", val:v }); });
+                    $.each(classes, function(i, v) { list.push({ type:"class", val:v }); });
                     $.each(elements, function(i, v) { list.push({ type:"element", val:v }); });
                     
                     //get a list of the jQuery functions
-                    for(var item in $()) { list.push({ type:"jQuery", val:item }); }
-                    for(var item in $) { list.push({ type:"jQuery", val:item }); }
-                    for(var item in jLinq.from([{}])) { list.push({ type:"jLinq", val:item }); }
-                    for(var item in jLinq) { list.push({ type:"jLinq", val:item }); }
-                    list.push({ type:"jLinq", val:"jLinq" });
+					var jqvals = {};
+                    for(var item in $("<div/>")) { jqvals[item] = true; }
+					for(var item in $) { jqvals[item] = true; }
+                    for(var item in jqvals) { list.push({ type:"jQuery", val:item }); }
+					
+					//jlinq values
+                    for(var item in jlinq.from([{}])) { list.push({ type:"jlinq", val:item }); }
+                    for(var item in jlinq) { list.push({ type:"jlinq", val:item }); }
+					for(var item in css_properties) { list.push({ type:"css", val:css_properties[item] }); }
+					for(var item in javascript_keywords) { list.push({ type:"js", val:javascript_keywords[item] }); }
+					for(var item in document.body) { list.push({ type:"html", val:item }); }
+					for(var item in document) { list.push({ type:"doc", val:item }); }
+					for(var item in window) { list.push({ type:"window", val:item }); }
+                    list.push({ type:"jlinq", val:"jlinq" });
                     
                     //get the commands for the shell
                     for(var item in extra) { list.push({ type:"jsshell", val:item }); }
                     
                     //order the items
-                    shell.extension.autocomplete = jLinq.from(list).orderBy("val").select();
+                    shell.extension.autocomplete = jlinq.from(list).sort("val").select();
                     
                 }
                 //no auto complete available
@@ -1840,13 +2131,13 @@ function ____execute__jsshell___script(script) {
                 text = text.replace(/^(\.|\#)*/, "");
                 
                 //find the matches 
-                var query = jLinq.from(shell.extension.autocomplete);
+                var query = jlinq.from(shell.extension.autocomplete);
                 
                 //search for names (if needed)
-                if (text.length > 0) { query = query.startsWith("val", text); }
+                if (text.length > 0) { query = query.starts("val", text); }
                     
                 //check for specific types
-                if (onlyClass) { query = query.equals("type", "css"); }
+                if (onlyClass) { query = query.equals("type", "class"); }
                 if (onlyId) { query = query.equals("type", "id"); }
                 
                 //return the final records
@@ -1866,6 +2157,7 @@ function ____execute__jsshell___script(script) {
             chrome.extension.sendRequest(
                 { command: "connect" },
                 function(settings) {
+
                     //load the settings and test for auto commands
                     shell.extension.loadSettings(settings);
                     
@@ -1877,6 +2169,7 @@ function ____execute__jsshell___script(script) {
                     
                     //initalize
                     shell.ui.init();
+					shell.shortcut.init();
                     
                     //auto show the window if needed
                     setTimeout(function() {
@@ -1940,6 +2233,7 @@ function ____execute__jsshell___script(script) {
         
         //displays a note
         note:function(params) {
+			if (typeof params == "string") params = { message:params };
         
             //make sure this is okay
             if (!(params && params.message && params.message.substr)) {
@@ -2208,8 +2502,8 @@ function ____execute__jsshell___script(script) {
             list:function() {
             
                 //select all of the commands
-                var commands = jLinq.from(shell.settings.commands)
-                    .orderBy("identity")
+                var commands = jlinq.from(shell.settings.commands)
+                    .sort("identity")
                     .select(function(rec) {
                         return rec.identity
                     })
@@ -2232,11 +2526,7 @@ function ____execute__jsshell___script(script) {
             
         //export a list of settings 
         exportSettings:function() {
-            var str = JSON.stringify(shell.settings);
-            str = str.replace(/\\/g, "\\\\");
-            str = str.replace(/"/g, "\\\"");
-            str = str.replace(/'/g, "\\'");
-            return str;
+            return JSON.stringify(shell.settings);
         },
         
         //imports settings into the editor
